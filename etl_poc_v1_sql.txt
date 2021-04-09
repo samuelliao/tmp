@@ -1,0 +1,135 @@
+~ix0l0t22;
+select a.* ,b.k as rsvi_k,b.k1 as rsvi_k1
+from rsvm a,outer rsvi b
+where a.policy_no=b.policy_no
+and a.coverage_no=b.coverage_no
+and a.plan_code=b.plan_code
+into temp rsvm_tmp1;
+update rsvm_tmp1
+set k=rsvi_k
+where rsvi_k is not null;
+update rsvm_tmp1
+set k1=rsvi_k1
+where rsvi_k1 is not null;
+
+--10293401 row(s) retrieved into temp table
+--update 56079
+--update 55950
+--plan_code調整
+update rsvm_tmp1
+  SET plan_code = trim(plan_code) || 'C'
+  WHERE ( plan_abbr_code = 'DDBR' )
+    AND ( plan_code[3,7] in ('DBLRC','DBPRC','DBTRC') )
+    AND ( plan_code[7,8] <> 'CC' );
+
+select policy_no,coverage_no,sum(rsv_div) as rsv_div
+from psdd_a
+group by policy_no,coverage_no
+into temp psdd_a_tmp;
+
+SELECT a.policy_no, a.coverage_no, sum(a.rsv_div) AS rsv_div
+FROM psdd_a_tmp a, rsvm b
+where a.policy_no = b.policy_no
+AND a.coverage_no = b.coverage_no
+AND b.effect_type <> '7'
+GROUP BY 1,2
+into temp psdd_a_tmp1
+;--1317406  
+select a.policy_no,a.coverage_no,agp agp_act
+      ,(round(b.co_prem_disc*1.0/b.co_gross_mode_prem,4)*100000.) as agp_prem_disc
+from rsvm a,recalc_agp b
+where a.effect_type ='1'
+and   a.face_amt   != 0
+and   b.policy_no   = a.policy_no
+and   b.coverage_no = a.coverage_no
+and   b.co_gross_mode_prem <>0
+into temp tmp_agp_prem_disc
+;--7252048
+
+rate_occu
+預設pldf.rate_occu_ind
+當   plan_abbr_code in ( 'JPA','JPAT','JSA','SDL','SPTL','SFDL','SHDL')
+使用 pocojpa or pocoupr .rate_occu
+select a.policy_no,b.rate_occu
+from   rsvm a, pocojpa b
+where b.policy_no = a.policy_no
+and   b.plan_abbr_code=a.plan_abbr_code
+into temp tmp_poco_occu
+;--26522
+insert into tmp_poco_occu
+select a.policy_no,b.rate_occu
+from   rsvm a, pocoupr b
+where b.policy_no = a.policy_no
+and   b.plan_abbr_code=a.plan_abbr_code
+;--877
+
+---------------------------------------------div_option，div_pay_freq
+SELECT a.policy_no,b.div_option,b.div_pay_freq
+FROM rsvm a, po_lite b
+WHERE a.policy_no = b.policy_no
+group by 1,2,3
+INTO TEMP po_tmp1
+;
+UPDATE po_tmp1
+SET div_option = '2'
+WHERE ((div_option is NULL) OR (div_option = " "))
+AND plan_abbr_code in (SELECT * FROM tmp_is_prod)
+;
+
+UPDATE po_tmp1
+SET div_option = '0'
+WHERE plan_abbr_code not in (SELECT * FROM tmp_is_prod
+union all select * from tmp_is_prod2)
+;
+UPDATE po_tmp1
+SET div_option = '3'
+WHERE plan_abbr_code in (SELECT * FROM tmp_is_prod2)
+;
+UPDATE po_tmp1
+SET div_pay_freq = '12'
+WHERE (plan_abbr_code in (SELECT * FROM tmp_is_prod2) and div_option='3')
+and  ((div_pay_freq is NULL) OR (div_pay_freq = " ") or (div_pay_freq = '0') )
+;
+UPDATE po_tmp1
+SET div_pay_freq = '0'
+WHERE ((div_pay_freq is NULL) OR (div_pay_freq = " "))
+AND plan_abbr_code in (SELECT * FROM tmp_is_prod2)
+;
+UPDATE po_tmp1
+SET div_pay_freq = '12'
+WHERE div_option = '2'
+;
+---------------------------------------
+--insert into moses_life_lite;
+select a.plan_abbr_code
+,substr(a.co_issue_date,5,2) as iss_mth,substr(a.co_issue_date,1,3)as iss_yr
+,a.plan_code,a.rate_scale
+,(CASE WHEN d.div_ind       ='0' then 'N' else 'S' END) as div_ind
+,(CASE WHEN d.rate_insu_ind =''  then '1' else d.rate_insu_ind END)   as insu_ind
+,(CASE WHEN a.plan_abbr_code in ('JPA','JSA','SDL','JPAT','SPTL','SFDL', 'SHDL') THEN e.rate_occu
+ ELSE d.rate_occu_ind END) AS occu_ind
+,f.div_option,f.div_pay_freq
+,a.rate_age as age,a.rate_sex as sex
+,(case when a.modx=0 then 1 else 12/a.modx end) as prem_freq
+,(case when c.agp_prem_disc is null then 0 else c.agp_prem_disc end)   as agp_prem_disc
+,a.effect_type,a.dur,a.k,a.k1
+,sum(case when a.effect_type='1' then 1 else 0 end) as cnt
+,sum(case when a.effect_type='1' then a.agp else 0 end) as agp
+,sum(case when a.effect_type='1' then c.agp_act else 0 end) as agp_act
+,sum(a.face_amt) as face_amt
+,sum(a.rsv_m)    as rsv
+,sum(a.rsv_sstd) as rsv_sstd
+,sum(a.rsv_unclaimed) as rsv_unclaimed
+,sum(case when b.rsv_div is null then 0 else b.rsv_div end) as rsv_div
+from rsvm_tmp1 a,outer psdd_a_tmp1 b,outer tmp_agp_prem_disc c,pldf d,
+outer tmp_poco_occu e,po_tmp1 f
+where b.policy_no  =a.policy_no
+and   b.coverage_no=a.coverage_no
+and   c.policy_no  =a.policy_no
+and   c.coverage_no=a.coverage_no
+and   d.plan_code  =a.plan_code
+and   d.rate_scale =a.rate_scale
+and   e.policy_no  =a.policy_no
+and   f.policy_no  =a.policy_no
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18
+
